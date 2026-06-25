@@ -7,12 +7,16 @@ import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
 import qupath.fx.dialogs.Dialogs;
+import qupath.lib.common.ColorTools;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.QuPathExtension;
+import qupath.lib.gui.prefs.PathPrefs;
 import qupath.lib.projects.ProjectImageEntry;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * Extension that highlights the currently open image in the project image list
@@ -22,6 +26,7 @@ import java.io.IOException;
 public class ActiveImageHelperExtension implements QuPathExtension {
 
     private boolean contextMenuInstalled = false;
+    private Path dynamicCssPath;
 
     @Override
     public void installExtension(QuPathGUI qupath) {
@@ -41,12 +46,47 @@ public class ActiveImageHelperExtension implements QuPathExtension {
     }
 
     private void addStylesheet(QuPathGUI qupath) {
-        var url = getClass().getResource("/css/highlight-active-image.css");
-        if (url == null)
-            return;
         var stage = qupath.getStage();
-        if (stage != null && stage.getScene() != null) {
-            stage.getScene().getStylesheets().add(url.toExternalForm());
+        if (stage == null || stage.getScene() == null)
+            return;
+
+        try {
+            dynamicCssPath = Files.createTempFile("qupath-active-image-", ".css");
+            dynamicCssPath.toFile().deleteOnExit();
+            updateStylesheet(qupath);
+
+            // Update the color whenever the default object color preference changes
+            PathPrefs.colorDefaultObjectsProperty().addListener((obs, oldVal, newVal) ->
+                    updateStylesheet(qupath));
+        } catch (IOException e) {
+            // Fall back to static CSS with hardcoded color
+            var url = getClass().getResource("/css/highlight-active-image.css");
+            if (url != null)
+                stage.getScene().getStylesheets().add(url.toExternalForm());
+        }
+    }
+
+    private void updateStylesheet(QuPathGUI qupath) {
+        if (dynamicCssPath == null)
+            return;
+
+        var scene = qupath.getStage().getScene();
+        int packed = PathPrefs.colorDefaultObjectsProperty().get();
+        String hex = String.format("#%02X%02X%02X",
+                ColorTools.red(packed), ColorTools.green(packed), ColorTools.blue(packed));
+
+        String css = ".project-browser .tree-cell.current-image {\n" +
+                     "    -fx-text-fill: " + hex + ";\n" +
+                     "    -fx-font-weight: bold;\n" +
+                     "}\n";
+
+        try {
+            String uri = dynamicCssPath.toUri().toString();
+            scene.getStylesheets().remove(uri);
+            Files.writeString(dynamicCssPath, css);
+            scene.getStylesheets().add(uri);
+        } catch (IOException e) {
+            // ignore
         }
     }
 

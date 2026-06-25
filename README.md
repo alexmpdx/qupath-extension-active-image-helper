@@ -12,7 +12,7 @@ right-click context menu.
 
 | Feature | Description |
 | --- | --- |
-| **Color highlight** | The currently open image name is displayed in teal (`#009688`) so it stands out immediately. |
+| **Color highlight** | The currently open image name is displayed using QuPath's **default object color** (set in *Edit → Preferences*), so it stands out immediately and stays consistent with your color scheme. |
 | **Scroll to current image** | Right-click the image list and select *Scroll to current image* to jump the list to the active image — useful when you have many images and the active one has scrolled out of view. |
 | **Remove current image** | Right-click and select *Remove current image* to close and remove the open image from the project in one step, with confirmation dialogs. QuPath's built-in remove action requires you to close the image first; this streamlines the workflow. |
 
@@ -47,5 +47,5 @@ The built `.jar` will be in `build/libs/`.
 
 ## Customizing the highlight color
 
-Edit `src/main/resources/css/highlight-active-image.css` and rebuild. The CSS
-file includes a list of suggested colors.
+The highlight color automatically follows QuPath's **default object color**,
+which you can change in *Edit → Preferences → Objects → Default color*.

@@ -1,18 +1,11 @@
 /*
- * Styles the currently open image in the project image list.
+ * Fallback stylesheet for the active image highlight.
  *
- * QuPath applies the CSS class "current-image" to the active image's tree cell.
- * By default, this only makes the text bold — this stylesheet adds a color
- * to make it much more obvious which image is currently open.
- *
- * To customize the color, change the hex value below.
- * Some suggestions:
- *   #009688  - teal (default)
- *   #1976D2  - blue
- *   #E65100  - deep orange
- *   #7B1FA2  - purple
+ * Normally the extension generates a dynamic stylesheet that follows
+ * QuPath's default object color preference (Edit → Preferences).
+ * This file is only used if dynamic stylesheet creation fails.
  */
 .project-browser .tree-cell.current-image {
-    -fx-text-fill: #009688;
+    -fx-text-fill: #FF0000;
     -fx-font-weight: bold;
 }
