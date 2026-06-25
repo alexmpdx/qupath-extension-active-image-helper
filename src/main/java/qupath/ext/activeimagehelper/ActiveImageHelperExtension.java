@@ -1,5 +1,6 @@
 package qupath.ext.activeimagehelper;
 
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.MenuItem;
@@ -7,6 +8,7 @@ import javafx.scene.control.ScrollBar;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
+import javafx.util.Duration;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.common.ColorTools;
 import qupath.lib.gui.QuPathGUI;
@@ -239,11 +241,15 @@ public class ActiveImageHelperExtension implements QuPathExtension {
         }
         qupath.refreshProject();
 
-        // Restore scroll position after the tree rebuilds
+        // Restore scroll position after the tree finishes rebuilding.
+        // The refresh triggers async layout passes, so we use a short
+        // delay to ensure we restore after the tree is fully rebuilt.
         if (scrollBar != null) {
             final ScrollBar sb = scrollBar;
             final double pos = scrollPos;
-            Platform.runLater(() -> sb.setValue(pos));
+            var pause = new PauseTransition(Duration.millis(100));
+            pause.setOnFinished(e -> sb.setValue(pos));
+            pause.play();
         }
     }
 
