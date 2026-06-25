@@ -200,12 +200,12 @@ public class ActiveImageHelperExtension implements QuPathExtension {
         if (imageData.isChanged())
             message += "\n\nWarning: this image has unsaved changes that will be lost.";
 
-        if (!Dialogs.showConfirmDialog("Remove image", message))
+        if (!Dialogs.showConfirmDialog("Remove current image", message))
             return;
 
         // Ask whether to delete associated data files on disk
         var deleteResult = Dialogs.showYesNoCancelDialog(
-                "Remove image",
+                "Remove current image",
                 "Also delete associated data files on disk?"
         );
         if (deleteResult == ButtonType.CANCEL)
@@ -237,7 +237,7 @@ public class ActiveImageHelperExtension implements QuPathExtension {
         try {
             project.syncChanges();
         } catch (IOException e) {
-            Dialogs.showErrorMessage("Remove image", "Failed to sync project changes: " + e.getMessage());
+            Dialogs.showErrorMessage("Remove current image", "Failed to sync project changes: " + e.getMessage());
         }
         qupath.refreshProject();
 
