@@ -3,6 +3,7 @@ package qupath.ext.activeimagehelper;
 import javafx.application.Platform;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.ScrollBar;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
@@ -209,6 +210,18 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             return;
         boolean deleteData = deleteResult == ButtonType.YES;
 
+        // Save scroll position before modifying the tree
+        var treeView = findProjectTreeView(qupath);
+        double scrollPos = 0;
+        ScrollBar scrollBar = null;
+        if (treeView != null) {
+            var node = treeView.lookup(".scroll-bar:vertical");
+            if (node instanceof ScrollBar sb) {
+                scrollBar = sb;
+                scrollPos = sb.getValue();
+            }
+        }
+
         // Close the image in all viewers that have it open
         for (var viewer : qupath.getAllViewers()) {
             var viewerData = viewer.getImageData();
@@ -225,6 +238,13 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             Dialogs.showErrorMessage("Remove image", "Failed to sync project changes: " + e.getMessage());
         }
         qupath.refreshProject();
+
+        // Restore scroll position after the tree rebuilds
+        if (scrollBar != null) {
+            final ScrollBar sb = scrollBar;
+            final double pos = scrollPos;
+            Platform.runLater(() -> sb.setValue(pos));
+        }
     }
 
     // ---- Reflection helper ----

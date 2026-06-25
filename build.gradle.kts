@@ -10,7 +10,7 @@ plugins {
 qupathExtension {
     name = "qupath-extension-active-image-helper"
     group = "io.github.alexmpdx"
-    version = "0.2.0"
+    version = "0.2.1"
     description = "Highlights the active image in the project list and adds convenience actions"
     automaticModule = "io.github.alexmpdx.activeimagehelper"
 }
