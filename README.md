@@ -8,7 +8,7 @@ subtle bold font, which is easy to miss in large projects. This extension makes
 the active image **visually obvious** and adds convenience actions to the
 right-click context menu.
 
-![Active Image Helper demo](docs/removeImage.gif)
+![Removing the current image without the list scrolling](docs/removeImage.gif)
 
 ## Features
 
