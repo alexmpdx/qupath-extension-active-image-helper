@@ -1,5 +1,5 @@
-# Javadocs
-docs/
+# Javadocs (but keep docs/ for README assets)
+docs/javadoc/
 
 # Maven
 deploy/
