@@ -1,31 +1,30 @@
 package qupath.ext.activeimagehelper;
 
 import javafx.animation.PauseTransition;
-import javafx.beans.binding.Bindings;
-import javafx.beans.binding.ObjectBinding;
 import javafx.application.Platform;
+import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.IntegerProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
-import javafx.collections.ListChangeListener;
-import javafx.scene.Node;
-import javafx.scene.Parent;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.ColorPicker;
+import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollBar;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
+import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.stage.WindowEvent;
 import javafx.util.Duration;
-import org.controlsfx.control.action.Action;
-import qupath.fx.prefs.controlsfx.PropertyItemBuilder;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.common.ColorTools;
 import qupath.lib.display.ImageDisplay;
 import qupath.lib.gui.QuPathGUI;
-import qupath.lib.gui.actions.ActionTools;
 import qupath.lib.gui.extensions.QuPathExtension;
 import qupath.lib.gui.prefs.PathPrefs;
-import qupath.lib.gui.tools.ColorToolsFX;
 import qupath.lib.gui.viewer.QuPathViewer;
 import qupath.lib.gui.viewer.QuPathViewerListener;
 import qupath.lib.images.ImageData;
@@ -40,13 +39,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
-import java.util.WeakHashMap;
-import java.util.stream.Stream;
 
 /**
  * Extension that highlights the currently open image in the project image list
@@ -55,8 +49,28 @@ import java.util.stream.Stream;
  */
 public class ActiveImageHelperExtension implements QuPathExtension {
 
+    /**
+     * Highlight color chosen by the user, as a packed RGB value. Only used when
+     * {@link #useDefaultObjectColor} is false.
+     */
+    private static final IntegerProperty highlightColor = PathPrefs.createPersistentPreference(
+            "activeImageHelper.highlightColor", ColorTools.packRGB(255, 0, 0));
+
+    /**
+     * Whether to follow QuPath's default object color rather than {@link #highlightColor}.
+     * True by default, which was the behavior before the color became user-selectable.
+     */
+    private static final BooleanProperty useDefaultObjectColor = PathPrefs.createPersistentPreference(
+            "activeImageHelper.useDefaultObjectColor", true);
+
     private boolean contextMenuInstalled = false;
     private Path dynamicCssPath;
+
+    /**
+     * Color currently being previewed in the color dialog, or null if no dialog is open.
+     * Kept out of the preferences so that cancelling the dialog reverts the preview.
+     */
+    private Integer previewColor;
 
     @Override
     public void installExtension(QuPathGUI qupath) {
@@ -85,9 +99,11 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             dynamicCssPath.toFile().deleteOnExit();
             updateStylesheet(qupath);
 
-            // Update the color whenever the default object color preference changes
+            // Update whenever anything feeding the effective color changes
             PathPrefs.colorDefaultObjectsProperty().addListener((obs, oldVal, newVal) ->
                     updateStylesheet(qupath));
+            highlightColor.addListener((obs, oldVal, newVal) -> updateStylesheet(qupath));
+            useDefaultObjectColor.addListener((obs, oldVal, newVal) -> updateStylesheet(qupath));
         } catch (IOException e) {
             // Fall back to static CSS with hardcoded color
             var url = getClass().getResource("/css/highlight-active-image.css");
@@ -101,7 +117,7 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             return;
 
         var scene = qupath.getStage().getScene();
-        int packed = PathPrefs.colorDefaultObjectsProperty().get();
+        int packed = getHighlightColor();
         String hex = String.format("#%02X%02X%02X",
                 ColorTools.red(packed), ColorTools.green(packed), ColorTools.blue(packed));
 
@@ -140,9 +156,109 @@ public class ActiveImageHelperExtension implements QuPathExtension {
         removeItem.setOnAction(e -> removeCurrentImage(qupath));
         removeItem.disableProperty().bind(qupath.imageDataProperty().isNull());
 
-        contextMenu.getItems().addAll(new SeparatorMenuItem(), scrollItem, removeItem);
+        // Only shown when the right-clicked row is the current image, so its visibility is
+        // recomputed each time the menu opens
+        var colorItem = new MenuItem("Set image name color...");
+        colorItem.setOnAction(e -> promptForHighlightColor(qupath));
+
+        contextMenu.getItems().addAll(new SeparatorMenuItem(), scrollItem, removeItem, colorItem);
+
+        // Add a handler rather than using setOnShowing, which QuPath's project browser already
+        // uses for its own items (see ProjectBrowser.getPopup) - setting it would replace theirs.
+        contextMenu.addEventHandler(WindowEvent.WINDOW_SHOWING, e ->
+                colorItem.setVisible(isCurrentImageSelected(qupath, treeView)));
+
         contextMenuInstalled = true;
         return true;
+    }
+
+    /**
+     * Checks whether the row that was right-clicked is the currently open image.
+     * <p>
+     * The tree selects the row that is right-clicked, and QuPath's own project browser menu items
+     * use the selection in the same way to decide what to show.
+     */
+    private boolean isCurrentImageSelected(QuPathGUI qupath, TreeView<?> tree) {
+        var imageData = qupath.getImageData();
+        var project = qupath.getProject();
+        if (imageData == null || project == null)
+            return false;
+
+        var selected = tree.getSelectionModel().getSelectedItem();
+        if (selected == null)
+            return false;
+
+        var entry = extractImageEntry(selected.getValue());
+        return entry != null && entry == project.getEntry(imageData);
+    }
+
+    // ---- Highlight color ----
+
+    /**
+     * The color used to highlight the active image, as a packed RGB value.
+     */
+    private int getHighlightColor() {
+        // A color being previewed in the dialog wins until the dialog is dismissed
+        if (previewColor != null)
+            return previewColor;
+        return useDefaultObjectColor.get()
+                ? PathPrefs.colorDefaultObjectsProperty().get()
+                : highlightColor.get();
+    }
+
+    private void promptForHighlightColor(QuPathGUI qupath) {
+        var picker = new ColorPicker(toColor(getHighlightColor()));
+        picker.setMaxWidth(Double.MAX_VALUE);
+
+        var followDefault = new CheckBox("Follow QuPath's default object color");
+        followDefault.setSelected(useDefaultObjectColor.get());
+        // Nothing to pick while the color is being taken from the preference
+        picker.disableProperty().bind(followDefault.selectedProperty());
+
+        // Show the chosen color in the image list straight away, without storing it: the
+        // preferences are only written if the dialog is accepted, so Cancel reverts
+        picker.valueProperty().addListener((obs, oldVal, newVal) -> {
+            previewColor = newVal == null ? null : packColor(newVal);
+            updateStylesheet(qupath);
+        });
+        followDefault.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            previewColor = newVal
+                    ? PathPrefs.colorDefaultObjectsProperty().get()
+                    : packColor(picker.getValue());
+            updateStylesheet(qupath);
+        });
+
+        var label = new Label("Set text color for the active image in the Project tab's image list:");
+        label.setWrapText(true);
+
+        var pane = new VBox(8, label, picker, followDefault);
+        pane.setPrefWidth(360);
+
+        boolean accepted = Dialogs.showConfirmDialog("Set image name color", pane);
+
+        // Stop previewing before touching the preferences, so the stored values take over
+        previewColor = null;
+        if (accepted) {
+            // Set the color before the flag, so the stylesheet is never rebuilt with a stale
+            // color in between
+            var color = picker.getValue();
+            if (color != null)
+                highlightColor.set(packColor(color));
+            useDefaultObjectColor.set(followDefault.isSelected());
+        }
+        // Apply the stored color, which also reverts the preview when cancelled
+        updateStylesheet(qupath);
+    }
+
+    private static int packColor(Color color) {
+        return ColorTools.packRGB(
+                (int) Math.round(color.getRed() * 255),
+                (int) Math.round(color.getGreen() * 255),
+                (int) Math.round(color.getBlue() * 255));
+    }
+
+    private static Color toColor(int packed) {
+        return Color.rgb(ColorTools.red(packed), ColorTools.green(packed), ColorTools.blue(packed));
     }
 
     private TreeView<?> findProjectTreeView(QuPathGUI qupath) {
