@@ -2,6 +2,8 @@ package qupath.ext.activeimagehelper;
 
 import javafx.animation.PauseTransition;
 import javafx.application.Platform;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.ObservableValue;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollBar;
@@ -11,15 +13,23 @@ import javafx.scene.control.TreeView;
 import javafx.util.Duration;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.common.ColorTools;
+import qupath.lib.display.ImageDisplay;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.QuPathExtension;
 import qupath.lib.gui.prefs.PathPrefs;
+import qupath.lib.gui.viewer.QuPathViewer;
+import qupath.lib.images.ImageData;
+import qupath.lib.images.servers.ImageServer;
+import qupath.lib.images.servers.PixelType;
 import qupath.lib.projects.ProjectImageEntry;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 
 /**
  * Extension that highlights the currently open image in the project image list
@@ -224,10 +234,15 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             }
         }
 
-        // Close the image in all viewers that have it open
+        // Close the image in all viewers that have it open.
+        // Emptying a viewer makes its ImageDisplay forget the previous image, and that memory is
+        // what QuPath's "keep display settings" preference uses to carry brightness/contrast over
+        // to the next image. So capture the settings first and re-apply them to whatever is opened
+        // next, making removal behave like simply switching to another image.
         for (var viewer : qupath.getAllViewers()) {
             var viewerData = viewer.getImageData();
             if (viewerData != null && project.getEntry(viewerData) == entry) {
+                armDisplayRestore(viewer);
                 viewer.resetImageData();
             }
         }
@@ -250,6 +265,99 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             var pause = new PauseTransition(Duration.millis(100));
             pause.setOnFinished(e -> sb.setValue(pos));
             pause.play();
+        }
+    }
+
+    // ---- Preserve display settings across removal ----
+
+    /**
+     * Captures the viewer's current display settings and arranges for them to be applied to the
+     * next image opened in that viewer.
+     * <p>
+     * This mirrors what happens when switching directly from one image to another: QuPath retains
+     * the display settings of the previous image, but only while the viewer's {@link ImageDisplay}
+     * still holds that image. Closing the image to remove it clears that state, so without this
+     * the next image opens with default brightness/contrast.
+     */
+    private void armDisplayRestore(QuPathViewer viewer) {
+        // Respect the user's preference, exactly as an image switch would
+        if (!PathPrefs.keepDisplaySettingsProperty().get())
+            return;
+
+        var display = viewer.getImageDisplay();
+        var server = viewer.getServer();
+        if (display == null || server == null)
+            return;
+
+        String json = display.toJSON(false);
+        if (json == null || json.isEmpty())
+            return;
+
+        var snapshot = new DisplaySnapshot(json, server);
+        var imageDataProperty = viewer.imageDataProperty();
+
+        // One-shot: apply to the next image opened in this viewer, then stop listening
+        imageDataProperty.addListener(new ChangeListener<ImageData<BufferedImage>>() {
+            @Override
+            public void changed(ObservableValue<? extends ImageData<BufferedImage>> obs,
+                                ImageData<BufferedImage> oldValue, ImageData<BufferedImage> newValue) {
+                // Still empty - stay armed until an image is actually opened
+                if (newValue == null)
+                    return;
+                imageDataProperty.removeListener(this);
+                snapshot.applyTo(newValue);
+            }
+        });
+    }
+
+    /**
+     * Display settings captured from a viewer, with enough channel information to decide whether
+     * they may be applied to a different image.
+     */
+    private static class DisplaySnapshot {
+
+        private final String json;
+        private final int nChannels;
+        private final PixelType pixelType;
+        private final List<String> channelNames = new ArrayList<>();
+
+        DisplaySnapshot(String json, ImageServer<BufferedImage> server) {
+            this.json = json;
+            this.nChannels = server.nChannels();
+            this.pixelType = server.getPixelType();
+            for (int c = 0; c < nChannels; c++)
+                channelNames.add(server.getChannel(c).getName());
+        }
+
+        /**
+         * Applies the captured settings to newly opened image data, if its channels are compatible.
+         */
+        void applyTo(ImageData<BufferedImage> imageData) {
+            if (!isCompatible(imageData.getServer()))
+                return;
+
+            // ImageDisplay reads this property whenever an image is set, so storing it here applies
+            // the settings to the image that is about to be displayed. QuPath itself uses the same
+            // approach to copy display settings between viewers (see QuPathViewer.setImageData).
+            boolean wasChanged = imageData.isChanged();
+            imageData.setProperty(ImageDisplay.class.getName(), json);
+            // Carrying settings over is not a user edit, so don't leave the image marked as
+            // modified - otherwise closing it would prompt to save changes that were never made.
+            imageData.setChanged(wasChanged);
+        }
+
+        /**
+         * Uses the same test as {@link ImageDisplay} when it retains settings between images:
+         * matching channel count, pixel type and channel names.
+         */
+        private boolean isCompatible(ImageServer<BufferedImage> server) {
+            if (server == null || server.nChannels() != nChannels || server.getPixelType() != pixelType)
+                return false;
+            for (int c = 0; c < nChannels; c++) {
+                if (!Objects.equals(channelNames.get(c), server.getChannel(c).getName()))
+                    return false;
+            }
+            return true;
         }
     }
 
