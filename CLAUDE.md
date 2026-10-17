@@ -5,9 +5,12 @@ project image list and adds right-click actions for it. Published as
 `io.github.alexmpdx:qupath-extension-active-image-helper`, GPL-3.0.
 
 - GitHub: https://github.com/alexmpdx/qupath-extension-active-image-helper
-- Current release: **v0.2.2** (June 25, 2026). Version lives in `build.gradle.kts`,
-  which is already at **v0.3.0** — built and tested locally, but not yet tagged,
-  released, or added to the catalog.
+- Current release: **v0.3.1** (October 16, 2026). Version lives in `build.gradle.kts`.
+  Note that **v0.3.0 was released without the toolbar icon color feature** — it was
+  tagged and published from the version-bump commit before the feature was written,
+  so v0.3.1 is the first release that actually contains it. A released version's
+  artifacts can't usefully be swapped in place: QuPath's extension manager keys on
+  the version number and would never notice.
 - Originally built June 24–25, 2026 with Claude Code. Those session transcripts
   were lost to transcript cleanup; `git log` is the only history. Keep this file
   and the commit messages informative for that reason.
@@ -27,7 +30,7 @@ project image list and adds right-click actions for it. Published as
 5. **Toolbar icon color** — two rows added to QuPath's own *Objects*
    preference section, giving the toolbar's annotation icons a color of their
    own so that the default object color is free to mean "None annotation
-   color". Added v0.3.0.
+   color". Added v0.3.1.
 
 ## Layout
 
@@ -130,7 +133,7 @@ Sibling repos (same parent folder `C:\Users\Alex\Work\Claude\QuPath\`):
   that currently holds the removed image, so an empty viewer is never re-armed.
   Snapshots hold only strings/doubles, never the removed server, so nothing of
   the deleted image is kept alive.
-### Toolbar icon color (v0.3.0)
+### Toolbar icon color (v0.3.1)
 
 - **Only the icon side can be overridden.** Unclassified ("None") objects are
   painted with `PathPrefs.colorDefaultObjectsProperty()` read *at paint time*
