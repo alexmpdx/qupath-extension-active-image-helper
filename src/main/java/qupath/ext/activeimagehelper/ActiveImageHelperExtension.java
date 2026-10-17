@@ -1,9 +1,14 @@
 package qupath.ext.activeimagehelper;
 
 import javafx.animation.PauseTransition;
+import javafx.beans.binding.Bindings;
+import javafx.beans.binding.ObjectBinding;
 import javafx.application.Platform;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
+import javafx.collections.ListChangeListener;
+import javafx.scene.Node;
+import javafx.scene.Parent;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollBar;
@@ -11,25 +16,37 @@ import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
 import javafx.util.Duration;
+import org.controlsfx.control.action.Action;
+import qupath.fx.prefs.controlsfx.PropertyItemBuilder;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.common.ColorTools;
 import qupath.lib.display.ImageDisplay;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.gui.actions.ActionTools;
 import qupath.lib.gui.extensions.QuPathExtension;
 import qupath.lib.gui.prefs.PathPrefs;
+import qupath.lib.gui.tools.ColorToolsFX;
 import qupath.lib.gui.viewer.QuPathViewer;
+import qupath.lib.gui.viewer.QuPathViewerListener;
 import qupath.lib.images.ImageData;
 import qupath.lib.images.servers.ImageServer;
 import qupath.lib.images.servers.PixelType;
+import qupath.lib.objects.PathObject;
 import qupath.lib.projects.ProjectImageEntry;
 
+import java.awt.Shape;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.WeakHashMap;
+import java.util.stream.Stream;
 
 /**
  * Extension that highlights the currently open image in the project image list
@@ -243,6 +260,7 @@ public class ActiveImageHelperExtension implements QuPathExtension {
             var viewerData = viewer.getImageData();
             if (viewerData != null && project.getEntry(viewerData) == entry) {
                 armDisplayRestore(viewer);
+                armViewRestore(viewer);
                 viewer.resetImageData();
             }
         }
@@ -306,6 +324,59 @@ public class ActiveImageHelperExtension implements QuPathExtension {
                     return;
                 imageDataProperty.removeListener(this);
                 snapshot.applyTo(newValue);
+            }
+        });
+    }
+
+    /**
+     * Captures the viewer's zoom and center, and restores them if the next image opened in that
+     * viewer uses the same server path.
+     * <p>
+     * {@link QuPathViewer#setImageData} leaves the zoom and center alone when the previous and
+     * next image share a server path - which happens when the same image file is present in a
+     * project more than once. Closing the image to remove it leaves no previous image for that
+     * check, so the view would otherwise be reset to fit the image.
+     */
+    private void armViewRestore(QuPathViewer viewer) {
+        var imageData = viewer.getImageData();
+        if (imageData == null)
+            return;
+
+        String serverPath = imageData.getServerPath();
+        double downsample = viewer.getDownsampleFactor();
+        double centerX = viewer.getCenterPixelX();
+        double centerY = viewer.getCenterPixelY();
+
+        // The restore has to happen after setImageData() has applied its zoom-to-fit, which rules
+        // out a listener on imageDataProperty, but before the viewer repaints, which rules out
+        // Platform.runLater (the first painted frame would show the reset view).
+        // QuPathViewerListener.imageDataChanged sits exactly between the two.
+        viewer.addViewerListener(new QuPathViewerListener() {
+
+            @Override
+            public void imageDataChanged(QuPathViewer source, ImageData<BufferedImage> imageDataOld,
+                                         ImageData<BufferedImage> imageDataNew) {
+                // Still empty - stay armed until an image is actually opened
+                if (imageDataNew == null)
+                    return;
+                source.removeViewerListener(this);
+                if (!serverPath.equals(imageDataNew.getServerPath()))
+                    return;
+                // -1, -1 means zoom without anchoring on a point; the single-argument overload
+                // would anchor on the mouse position if the cursor happened to be over the viewer
+                source.setDownsampleFactor(downsample, -1, -1);
+                source.setCenterPixelLocation(centerX, centerY);
+            }
+
+            @Override
+            public void visibleRegionChanged(QuPathViewer source, Shape shape) {}
+
+            @Override
+            public void selectedObjectChanged(QuPathViewer source, PathObject pathObjectSelected) {}
+
+            @Override
+            public void viewerClosed(QuPathViewer source) {
+                source.removeViewerListener(this);
             }
         });
     }
