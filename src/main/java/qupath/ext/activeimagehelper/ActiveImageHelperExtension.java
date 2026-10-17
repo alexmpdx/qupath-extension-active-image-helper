@@ -2,14 +2,21 @@ package qupath.ext.activeimagehelper;
 
 import javafx.animation.PauseTransition;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.binding.ObjectBinding;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.ObjectProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
+import javafx.collections.ListChangeListener;
+import javafx.scene.Node;
+import javafx.scene.Parent;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ColorPicker;
 import javafx.scene.control.Label;
+import javafx.scene.control.Labeled;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollBar;
 import javafx.scene.control.SeparatorMenuItem;
@@ -17,14 +24,22 @@ import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
+import javafx.scene.paint.Paint;
 import javafx.stage.WindowEvent;
 import javafx.util.Duration;
+import org.controlsfx.control.PropertySheet;
+import org.controlsfx.control.action.Action;
+import org.controlsfx.property.editor.AbstractPropertyEditor;
+import org.controlsfx.property.editor.PropertyEditor;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.common.ColorTools;
 import qupath.lib.display.ImageDisplay;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.gui.actions.ActionTools;
 import qupath.lib.gui.extensions.QuPathExtension;
+import qupath.lib.gui.localization.QuPathResources;
 import qupath.lib.gui.prefs.PathPrefs;
+import qupath.lib.gui.tools.ColorToolsFX;
 import qupath.lib.gui.viewer.QuPathViewer;
 import qupath.lib.gui.viewer.QuPathViewerListener;
 import qupath.lib.images.ImageData;
@@ -39,8 +54,14 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.WeakHashMap;
+import java.util.stream.Stream;
 
 /**
  * Extension that highlights the currently open image in the project image list
@@ -63,6 +84,23 @@ public class ActiveImageHelperExtension implements QuPathExtension {
     private static final BooleanProperty useDefaultObjectColor = PathPrefs.createPersistentPreference(
             "activeImageHelper.useDefaultObjectColor", true);
 
+    /**
+     * Color for the toolbar's annotation icons, as a packed RGB value. Only used when
+     * {@link #useDefaultObjectColorForIcons} is false.
+     * <p>
+     * The default is QuPath's default object color as it is stored at startup, so clearing the
+     * checkbox without having picked a color leaves the icons looking the same.
+     */
+    private static final IntegerProperty toolbarIconColor = PathPrefs.createPersistentPreference(
+            "activeImageHelper.toolbarIconColor", PathPrefs.colorDefaultObjectsProperty().get());
+
+    /**
+     * Whether the toolbar's annotation icons follow QuPath's default object color rather than
+     * {@link #toolbarIconColor}. True by default, which is QuPath's own behavior.
+     */
+    private static final BooleanProperty useDefaultObjectColorForIcons = PathPrefs.createPersistentPreference(
+            "activeImageHelper.useDefaultObjectColorForIcons", true);
+
     private boolean contextMenuInstalled = false;
     private Path dynamicCssPath;
 
@@ -75,6 +113,11 @@ public class ActiveImageHelperExtension implements QuPathExtension {
     @Override
     public void installExtension(QuPathGUI qupath) {
         addStylesheet(qupath);
+        addToolbarIconColorPreference(qupath);
+
+        // The toolbar exists by now, but recoloring is deferred along with everything else that
+        // reaches into the scene graph
+        Platform.runLater(() -> installToolbarIconColor(qupath));
 
         // Defer context menu installation to ensure the scene graph is ready
         Platform.runLater(() -> {
@@ -272,6 +315,275 @@ public class ActiveImageHelperExtension implements QuPathExtension {
 
         var node = projectBrowser.lookup(".tree-view");
         return node instanceof TreeView<?> tv ? tv : null;
+    }
+
+    // ---- Toolbar icon color ----
+
+    /**
+     * The single binding that every recolored icon color is bound to, so that all of them change
+     * together as soon as the preference does.
+     */
+    private static final ObjectBinding<Paint> iconPaint = Bindings.createObjectBinding(
+            () -> ColorToolsFX.getCachedColor(useDefaultObjectColorForIcons.get()
+                    ? PathPrefs.colorDefaultObjectsProperty().get()
+                    : toolbarIconColor.get()),
+            useDefaultObjectColorForIcons, toolbarIconColor, PathPrefs.colorDefaultObjectsProperty());
+
+    /**
+     * Buttons whose graphic is already watched, so a listener is only ever added once.
+     */
+    private final Set<Labeled> watchedButtons = Collections.newSetFromMap(new WeakHashMap<>());
+
+    /**
+     * Key for QuPath's own Objects preference category, so that these rows join that section
+     * rather than starting a second one in a non-English locale.
+     */
+    private static final String OBJECTS_CATEGORY_KEY = "Prefs.Objects";
+
+    /**
+     * The icon color as a {@link Color}, which is what the color picker works with.
+     */
+    private static final ObservableValue<? extends Object> toolbarIconColorValue =
+            Bindings.createObjectBinding(() -> toColor(toolbarIconColor.get()), toolbarIconColor);
+
+    /**
+     * Adds the icon color preferences to QuPath's own Objects section, next to the default object
+     * color that they split away from.
+     * <p>
+     * These are custom {@link PropertySheet.Item}s rather than ones from {@code PropertyItemBuilder},
+     * because the standard editors can neither put the label after the checkbox nor grey out the
+     * color picker while the checkbox is ticked.
+     */
+    private void addToolbarIconColorPreference(QuPathGUI qupath) {
+        qupath.getPreferencePane().getPropertySheet().getItems().addAll(
+                new ToolbarIconColorItem(), new FollowDefaultColorItem());
+    }
+
+    private static String objectsCategory() {
+        return QuPathResources.hasString(OBJECTS_CATEGORY_KEY)
+                ? QuPathResources.getString(OBJECTS_CATEGORY_KEY)
+                : "Objects";
+    }
+
+    /**
+     * The <i>Toolbar icon color</i> row. Values are handled as {@link Color}, since that is what the
+     * color picker uses; the preference itself stores a packed RGB value.
+     */
+    private static class ToolbarIconColorItem implements PropertySheet.Item {
+
+        @Override
+        public Class<?> getType() {
+            return Color.class;
+        }
+
+        @Override
+        public String getCategory() {
+            return objectsCategory();
+        }
+
+        @Override
+        public String getName() {
+            return "Toolbar icon color";
+        }
+
+        @Override
+        public String getDescription() {
+            return "Color for the annotation icons in the toolbar: the drawing tools, selection "
+                    + "mode, and the annotation overlay buttons.\n"
+                    + "Used only when 'Toolbar icons follow default object color' is cleared.";
+        }
+
+        @Override
+        public Object getValue() {
+            return toColor(toolbarIconColor.get());
+        }
+
+        @Override
+        public void setValue(Object value) {
+            if (value instanceof Color color)
+                toolbarIconColor.set(packColor(color));
+        }
+
+        @Override
+        public Optional<ObservableValue<? extends Object>> getObservableValue() {
+            return Optional.of(toolbarIconColorValue);
+        }
+
+        @Override
+        public Optional<Class<? extends PropertyEditor<?>>> getPropertyEditorClass() {
+            return Optional.of(ToolbarIconColorEditor.class);
+        }
+
+        @Override
+        public boolean isEditable() {
+            // Sets the initial state; the editor keeps it up to date from then on
+            return !useDefaultObjectColorForIcons.get();
+        }
+
+    }
+
+    /**
+     * The <i>Toolbar icons follow default object color</i> row, which uses the standard checkbox
+     * editor.
+     */
+    private static class FollowDefaultColorItem implements PropertySheet.Item {
+
+        @Override
+        public Class<?> getType() {
+            return Boolean.class;
+        }
+
+        @Override
+        public String getCategory() {
+            return objectsCategory();
+        }
+
+        @Override
+        public String getName() {
+            return "Toolbar icons follow default object color";
+        }
+
+        @Override
+        public String getDescription() {
+            return "Color the annotation icons in the toolbar with QuPath's default object color, "
+                    + "which is also the color of unclassified ('None') annotations.\n"
+                    + "Clear this to give the icons a color of their own, leaving the default object "
+                    + "color to apply to the annotations alone.";
+        }
+
+        @Override
+        public Object getValue() {
+            return useDefaultObjectColorForIcons.get();
+        }
+
+        @Override
+        public void setValue(Object value) {
+            if (value instanceof Boolean selected)
+                useDefaultObjectColorForIcons.set(selected);
+        }
+
+        @Override
+        public Optional<ObservableValue<? extends Object>> getObservableValue() {
+            return Optional.of(useDefaultObjectColorForIcons);
+        }
+
+    }
+
+    /**
+     * Color picker for the icon color, greyed out while the icons follow the default object color.
+     * <p>
+     * Public with a single-argument constructor because ControlsFX creates it reflectively.
+     */
+    public static class ToolbarIconColorEditor extends AbstractPropertyEditor<Color, ColorPicker> {
+
+        public ToolbarIconColorEditor(PropertySheet.Item item) {
+            super(item, new ColorPicker());
+            var picker = getEditor();
+            picker.setMaxWidth(Double.MAX_VALUE);
+            // A listener rather than a binding, because the property sheet calls setDisable itself
+            // when it builds the row - which would throw on a bound property
+            picker.setDisable(useDefaultObjectColorForIcons.get());
+            useDefaultObjectColorForIcons.addListener((obs, oldVal, newVal) -> picker.setDisable(newVal));
+        }
+
+        @Override
+        protected ObservableValue<Color> getObservableValue() {
+            return getEditor().valueProperty();
+        }
+
+        @Override
+        public void setValue(Color value) {
+            getEditor().setValue(value);
+        }
+
+    }
+
+
+    private void installToolbarIconColor(QuPathGUI qupath) {
+        var toolbar = qupath.getToolBar();
+        if (toolbar == null)
+            return;
+        // Tools come and go while QuPath runs - the wand tool arrives with an extension, and the
+        // line/arrow tools can be switched in the preferences - which rebuilds the tool buttons
+        toolbar.getItems().addListener((ListChangeListener<Node>) change -> recolorToolbarIcons(qupath));
+        recolorToolbarIcons(qupath);
+    }
+
+    /**
+     * Rebinds the icons of every toolbar button QuPath colors with the default object color, so
+     * that they follow {@link #iconPaint} instead.
+     */
+    private void recolorToolbarIcons(QuPathGUI qupath) {
+        var actions = iconActions(qupath);
+        for (var item : qupath.getToolBar().getItems()) {
+            if (!(item instanceof Labeled button) || !actions.contains(ActionTools.getActionProperty(item)))
+                continue;
+            if (watchedButtons.add(button)) {
+                // ControlsFX gives the button a *duplicate* of the action's graphic, and makes a
+                // fresh one whenever the action's graphic changes - as it does when switching
+                // between the line and arrow tools - so each new graphic needs recoloring too
+                button.graphicProperty().addListener((obs, oldVal, newVal) -> rebindIconColors(newVal));
+            }
+            rebindIconColors(button.getGraphic());
+        }
+    }
+
+    /**
+     * The actions whose toolbar icons QuPath colors with the default object color: every drawing
+     * tool, selection mode, and the annotation overlay toggles.
+     */
+    private static Set<Action> iconActions(QuPathGUI qupath) {
+        var toolManager = qupath.getToolManager();
+        var overlayActions = qupath.getOverlayActions();
+        // Identity, since Action doesn't override equals, and null is filtered out so that a
+        // button without an action can never match
+        Set<Action> actions = Collections.newSetFromMap(new IdentityHashMap<>());
+        toolManager.getTools().stream()
+                .map(toolManager::getToolAction)
+                .filter(Objects::nonNull)
+                .forEach(actions::add);
+        Stream.of(toolManager.getSelectionModeAction(),
+                        overlayActions.SHOW_ANNOTATIONS,
+                        overlayActions.FILL_ANNOTATIONS,
+                        overlayActions.SHOW_NAMES)
+                .filter(Objects::nonNull)
+                .forEach(actions::add);
+        return actions;
+    }
+
+    /**
+     * Rebinds every color within one icon that QuPath bound to the default object color.
+     * <p>
+     * Only bound properties are touched, so the parts of an icon with a fixed color - such as the
+     * detection-colored dots in the points tool icon, or a transparent fill - are left alone.
+     */
+    private static void rebindIconColors(Node node) {
+        if (node == null)
+            return;
+        // javafx.scene.shape.Shape is spelled out because java.awt.Shape is imported above
+        if (node instanceof javafx.scene.shape.Shape shape) {
+            rebindIfBound(shape.strokeProperty());
+            rebindIfBound(shape.fillProperty());
+        }
+        if (node instanceof Labeled labeled) {
+            // Glyph icons that take their color from the theme carry this style class, and QuPath
+            // avoids even requesting their text fill - see GuiTools.ensureDuplicatableGlyph, which
+            // notes that doing so can lock the color to black
+            if (!labeled.getStyleClass().contains("use-text-fill"))
+                rebindIfBound(labeled.textFillProperty());
+            // A Labeled paints itself with its text fill, so only its graphic needs walking - and
+            // descending into the nodes its skin builds would recolor icons styled by the theme
+            rebindIconColors(labeled.getGraphic());
+        } else if (node instanceof Parent parent) {
+            parent.getChildrenUnmodifiable().forEach(ActiveImageHelperExtension::rebindIconColors);
+        }
+    }
+
+    private static void rebindIfBound(ObjectProperty<Paint> property) {
+        if (!property.isBound())
+            return;
+        property.unbind();
+        property.bind(iconPaint);
     }
 
     // ---- Scroll to current image ----

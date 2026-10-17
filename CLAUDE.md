@@ -5,7 +5,9 @@ project image list and adds right-click actions for it. Published as
 `io.github.alexmpdx:qupath-extension-active-image-helper`, GPL-3.0.
 
 - GitHub: https://github.com/alexmpdx/qupath-extension-active-image-helper
-- Current release: **v0.2.2** (June 25, 2026). Version lives in `build.gradle.kts`.
+- Current release: **v0.2.2** (June 25, 2026). Version lives in `build.gradle.kts`,
+  which is already at **v0.3.0** — built and tested locally, but not yet tagged,
+  released, or added to the catalog.
 - Originally built June 24–25, 2026 with Claude Code. Those session transcripts
   were lost to transcript cleanup; `git log` is the only history. Keep this file
   and the commit messages informative for that reason.
@@ -22,6 +24,10 @@ project image list and adds right-click actions for it. Published as
 4. **Set image name color** — context-menu item, shown *only* when the
    right-clicked row is the current image. Opens a color picker with a
    "follow QuPath's default object color" checkbox.
+5. **Toolbar icon color** — two rows added to QuPath's own *Objects*
+   preference section, giving the toolbar's annotation icons a color of their
+   own so that the default object color is free to mean "None annotation
+   color". Added v0.3.0.
 
 ## Layout
 
@@ -124,6 +130,56 @@ Sibling repos (same parent folder `C:\Users\Alex\Work\Claude\QuPath\`):
   that currently holds the removed image, so an empty viewer is never re-armed.
   Snapshots hold only strings/doubles, never the removed server, so nothing of
   the deleted image is kept alive.
+### Toolbar icon color (v0.3.0)
+
+- **Only the icon side can be overridden.** Unclassified ("None") objects are
+  painted with `PathPrefs.colorDefaultObjectsProperty()` read *at paint time*
+  (`PathObjectPainter` → `ColorToolsFX.getDisplayedColorARGB`), and an
+  unclassified object has a **null** `PathClass` — `PathClassPane` even disables
+  the color picker for `PathClass.NULL_CLASS`. There is no hook there, so that
+  preference keeps meaning "None annotation color". The toolbar icons are a
+  different story: `IconFactory` *binds* their stroke/fill/textFill to the same
+  preference when it builds them, and a binding can be replaced. Hence the split
+  is implemented on the icon side only.
+- **Which buttons are targeted.** `recolorToolbarIcons` walks
+  `getToolBar().getItems()` and matches each button's action
+  (`ActionTools.getActionProperty`) against `toolManager.getToolAction(tool)` for
+  every tool in `getTools()` — that is how the wand, which arrives with another
+  extension, is included — plus `getSelectionModeAction()` and
+  `getOverlayActions().SHOW_ANNOTATIONS/FILL_ANNOTATIONS/SHOW_NAMES`.
+- **Only *bound* color properties are rebound.** That is what leaves fixed colors
+  alone (the detection-colored dots in the points icon, transparent fills). Glyph
+  icons that take their color from the theme carry the `use-text-fill` style
+  class and are skipped outright: `GuiTools.ensureDuplicatableGlyph` warns that
+  merely *requesting* `textFillProperty()` on one can lock its color to black.
+  For the same reason, never walk a `Labeled`'s skin children — only its graphic.
+- **ControlsFX gives the button a duplicate** of the action's graphic
+  (`ActionUtils.copyNode` → `Duplicatable.duplicate()`), not the node itself, and
+  builds a fresh one whenever the action's graphic changes — as it does when
+  switching between the line and arrow tools. That is why each button's
+  `graphicProperty` is watched, and why `toolbar.getItems()` is watched too (the
+  tool buttons are rebuilt when the available tools change).
+- **The preference rows are custom `PropertySheet.Item`s.** fxtras'
+  `PropertyItemBuilder` cannot express "grey out the picker while the checkbox is
+  ticked", so both rows implement `PropertySheet.Item` and the color row names its
+  own `PropertyEditor`, which ControlsFX instantiates **reflectively** — hence
+  `public static` with a single `PropertySheet.Item` constructor. The greying is a
+  **listener, not a binding**: `PropertySheetSkin` calls `setDisable()` on the
+  editor node while building the row, which would throw on a bound property;
+  `isEditable()` supplies the initial state instead.
+- **Category** is the key `Prefs.Objects` resolved through `QuPathResources`, so
+  the rows join QuPath's own Objects section in any locale. Within a category
+  ControlsFX preserves insertion order (it only sorts categories), so the color
+  row is added first. The sheet's search box matches name *and* description.
+- **`toolbarIconColor` defaults to the default object color read at startup**, and
+  fxtras doesn't write a persistent preference until it changes — so a fresh
+  install looks exactly like stock QuPath, and clearing the checkbox without
+  picking a color changes nothing on screen.
+- **Known and deliberately not chased:** the icons shift very slightly when the
+  color changes. QuPath's built-in color preferences do the same thing, so the
+  rebinding isn't the cause. Investigated 2026-10-16; don't re-open it without a
+  reason.
+
 - No unit tests exist; everything is verified by running QuPath.
 
 ## Build
@@ -150,11 +206,25 @@ Sibling repos (same parent folder `C:\Users\Alex\Work\Claude\QuPath\`):
 3. For a quick test, drag the new jar onto QuPath **after removing the
    catalog-installed version** in the extension manager — two copies of the
    extension load twice and the context-menu items duplicate.
+   Faster loop once a version folder exists: copy `build\libs\...jar` straight
+   over the installed one and restart QuPath. The jar isn't file-locked while
+   QuPath runs, but the running instance keeps the old classes until it
+   restarts — so **a copy with no restart looks exactly like a build that
+   didn't take**. `extensions\catalogs\registry.json` says which version is
+   actually loaded (`installedVersion` per extension).
 4. Verify: open a project with many images; the open image is bold + colored;
    right-click → *Scroll to current image* / *Remove current image*; change
    *Edit → Preferences → Objects → Default color* and confirm the highlight
    follows it; remove an image from the middle of a long list and confirm the
    list doesn't jump to the top.
+5. Verify the icon color: *Edit → Preferences → Objects* → clear *Toolbar icons
+   follow default object color*, pick a *Toolbar icon color*, and confirm the
+   drawing tools / selection mode / annotation overlay buttons change while
+   "None" annotations keep the default object color. The picker must grey out
+   when the checkbox is ticked. The move tool and other theme-colored icons must
+   **not** change. Preference values can be read without the GUI under
+   `HKCU:\Software\JavaSoft\Prefs\io.github.qupath\0.7` (Java encodes camelCase
+   with slashes, e.g. `active/Image/Helper.toolbar/Icon/Color`).
 
 ## Release checklist
 
